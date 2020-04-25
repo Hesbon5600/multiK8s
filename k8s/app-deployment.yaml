@@ -1,0 +1,38 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: app-deployment
+
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      component: api
+  template:
+    metadata:
+      labels:
+        component: api
+    spec:
+      containers:
+        - name: app
+          image: hesbon5600/docker-basics-app-image:1.0
+          ports:
+            - containerPort: 8000
+          env:
+            - name: CELERY_BROKER_URL
+              value: redis://redis-cluster-ip-service
+            - name: CELERY_RESULT_BACKEND
+              value: redis://redis-cluster-ip-service
+            - name: DB_NAME
+              value: docker
+            - name: DB_USER
+              value: postgres
+            - name: DB_HOST
+              value: postgres-cluster-ip-service
+            - name: DB_PORT
+              value: '5432'
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: dbpassword
+                  key: DB_PASSWORD
