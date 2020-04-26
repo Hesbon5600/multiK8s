@@ -19,8 +19,8 @@ install:
 
 # Run tests
 before_script:
-  - psql -c "create database $POSTGRES_DB;" -U $POSTGRES_USER
-  - psql -c "ALTER USER $POSTGRES_USER WITH PASSWORD '$POSTGRES_PASSWORD';" -U $POSTGRES_USER
+  - psql -c "create database $DB_NAME;" -U $DB_USER
+  - psql -c "ALTER USER $DB_USER WITH PASSWORD '$DB_PASSWORD';" -U $DB_USER
   - python manage.py migrate
 script:
   - coverage run --source=app manage.py test
