@@ -1,0 +1,187 @@
+version: 2.1
+orbs:
+  gcloud: circleci/gcp-cli@1.8.3
+  docker: circleci/docker@1.0.1
+  k8s: circleci/kubernetes@0.10.0
+
+git default: &defaults
+  docker:
+    - image: circleci/python:3.7 # every job must define an image for the docker executor and subsequent jobs may define a different image.
+      environment:
+        PIPENV_VENV_IN_PROJECT: "true"
+    - image: circleci/postgres:9.6.2 # an example of how to specify a service container
+      environment:
+        DB_USER: root
+        DB_NAME: test
+        DB_PASSWORD: "test"
+        DB_HOST: "localhost"
+  working_directory: ~/simplek8s
+
+commands:
+  load-cache:
+    description: Load cached Pip packages.
+    parameters:
+      key:
+        default: pip
+        description: The cache key to use. The key is immutable.
+        type: string
+    steps:
+      - restore_cache:
+          keys:
+            - << parameters.key >>-{{ checksum "Pipfile.lock"  }}
+  install-deps:
+    description: Install packages from requirements.txt via Pip.
+    parameters:
+      local:
+        default: true
+        description: Install packages for local user, not globally. Defaults to true.
+        type: boolean
+    steps:
+      - run:
+          command: |
+            if << parameters.local >>; then
+              pip install pipenv --user
+              pipenv install
+            else
+              pip install pipenv
+              pipenv install
+            fi
+          name: Install Dependencies
+  save-cache:
+    description: Save Pip packages to cache.
+    parameters:
+      key:
+        default: pip
+        description: The cache key to use. The key is immutable.
+        type: string
+    steps:
+      - save_cache:
+          key: << parameters.key >>-{{ checksum "Pipfile.lock"  }}
+          paths:
+            - /home/circleci/.local/lib/
+  deploy-app:
+    description: Deploy to gcp
+    parameters:
+      cluster:
+        default: multi-k8
+        description: |
+          The name of the cluster for which to create a kubeconfig entry.
+        type: string
+      gcloud-service-key:
+        default: GCLOUD_SERVICE_KEY
+        description: The gcloud service key
+        type: env_var_name
+      google-compute-zone:
+        default: GOOGLE_COMPUTE_ZONE
+        description: The Google compute zone to connect with via the gcloud CLI
+        type: env_var_name
+      google-project-id:
+        default: GOOGLE_PROJECT_ID
+        description: The Google project ID to connect with via the gcloud CLI
+        type: env_var_name
+      perform-login:
+        default: true
+        description: |
+          Whether to perform a login with the gcloud CLI.
+        type: boolean
+    steps:
+      - gcloud/install
+      - when:
+          condition: <<parameters.perform-login>>
+          steps:
+            - gcloud/initialize:
+                gcloud-service-key: <<parameters.gcloud-service-key>>
+                google-compute-zone: <<parameters.google-compute-zone>>
+                google-project-id: <<parameters.google-project-id>>
+      - k8s/install-kubectl
+      - run:
+          command: |
+            gcloud container clusters get-credentials <<parameters.cluster>>
+          name: Update kubeconfig with cluster credentials
+      - run:
+          command: |
+            kubectl apply -f k8s
+          name: Apply K8s config
+      - run:
+          command: |
+            kubectl set image deployments/app-deployment app=hesbon5600/multi-docker-app-image:${CIRCLE_SHA1}
+          name: Apply updated K8s config
+
+  build-deploy-image:
+    steps:
+      - setup_remote_docker
+      - checkout
+      - docker/check
+      - docker/build:
+          dockerfile: ./docker/Dockerfile
+          image: hesbon5600/multi-docker-app-image
+          path: ~/simplek8s-build
+          tag: latest
+      - run:
+          name: Tag the built image with a SHA
+          command: |
+            docker tag hesbon5600/multi-docker-app-image:latest hesbon5600/multi-docker-app-image:${CIRCLE_SHA1}
+      - docker/push:
+          digest-path: /tmp/digest.txt
+          image: hesbon5600/multi-docker-app-image
+          tag: latest
+      - docker/push:
+          digest-path: /tmp/digest.txt
+          image: hesbon5600/multi-docker-app-image
+          tag: ${CIRCLE_SHA1}
+      - run:
+          command: |
+            echo "Digest is: $(</tmp/digest.txt)"
+  run-unit-tests:
+    description: Run the unit tests
+    steps:
+      - run:
+          command: |
+            pipenv run python manage.py test
+          name: Test
+jobs:
+  run-tests:
+    <<: *defaults
+    parameters:
+      branch:
+        type: string
+        default: ""
+    steps:
+      - checkout
+      - load-cache
+      - install-deps
+      - save-cache
+      - run-unit-tests
+  build-publish-image:
+    working_directory: ~/simplek8s-build
+    executor: docker/docker
+    steps:
+      - build-deploy-image
+  deploy-to-gke:
+    working_directory: ~/simplek8s
+    executor: docker/docker
+    steps:
+      - checkout
+      - deploy-app
+
+workflows:
+  version: 2
+  main:
+    jobs:
+      - run-tests
+      - build-publish-image:
+          requires:
+            - run-tests
+          filters:
+            branches:
+              only:
+                - master
+                - develop
+      - deploy-to-gke:
+          requires:
+            - build-publish-image
+          filters:
+            branches:
+              only:
+                - master
+                - develop
